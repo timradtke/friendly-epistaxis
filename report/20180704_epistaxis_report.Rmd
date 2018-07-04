@@ -1,0 +1,229 @@
+---
+title: "Friendly Epistaxis"
+author: "Tim Radtke"
+output: beamer_presentation
+---
+
+```{r setup, include=TRUE, echo = FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+```
+
+## Data
+
+```{r}
+# load standard packages
+library(dplyr)
+library(tidyr)
+library(readr)
+library(ggplot2)
+
+# load data using readr
+efficacy <- read_csv("~/friendly-epistaxis/data/efficacy.csv")
+randomization <- read_csv("~/friendly-epistaxis/data/randomization.csv")
+subject <- read_csv("~/friendly-epistaxis/data/subject.csv")
+
+all <- subject %>%
+  left_join(randomization) %>%
+  left_join(efficacy)
+```
+
+The currently available data set consists of `r dim(all)[1]` observations and `r dim(all)[2]` variables.
+
+We have `r sum(is.na(all$eye.colour))` NA in the `eye.colour` variable.
+
+We have `r sum(is.na(all$mucus.viscosity))` NA in the `mucus.viscosity` variable.
+
+## Data - Mucus Viscosity
+
+```{r}
+all %>%
+  ggplot(aes(x = 1, y = mucus.viscosity)) +
+  geom_boxplot() +
+  theme(text = element_text(size=18))
+```
+
+## Data - Mucus Viscosity
+
+```{r}
+all %>%
+  ggplot(aes(x = 1, y = log(mucus.viscosity))) +
+  geom_boxplot() +
+  theme(text = element_text(size=18))
+```
+
+## Data - Mucus Viscosity
+
+While mucus viscosity is a continuous variable, there are `r sum(all$mucus.viscosity == 0, na.rm = TRUE)` observations that are zero.
+
+Is this a mistake and actually missing data, or correct?
+
+## Data - Mucus Viscosity and Nosebleeds
+
+There does not appear to be an obvious relation between mucus viscosity and nosebleeds requiring hospitalization in the previous year.
+
+```{r, fig.height = 6}
+poisson_smooth <- function(...) {
+  geom_smooth(method = "glm", 
+              method.args = list(family = poisson(link = "log")), ...)
+}
+
+all %>%
+  ggplot(aes(x = mucus.viscosity, y = previous.year)) +
+  geom_jitter(height = 0.1) +
+  poisson_smooth() +
+  theme_bw() +
+  theme(text = element_text(size=18)) +
+  labs(subtitle = "Trend line indicates a Poisson GLM smoother.")
+```
+
+## Data - Mucus Viscosity and Tissue Use
+
+A more clear relation might exist between mucus viscosity and tissue use:
+
+```{r, fig.height = 6}
+binomial_smooth <- function(...) {
+  geom_smooth(method = "glm", method.args = list(family = "binomial"), ...)
+}
+
+all %>%
+  mutate(tissue.use.bin = ifelse(tissue.use == "MEDIUM", 0, 1)) %>%
+  ggplot(aes(x = mucus.viscosity, y = tissue.use.bin)) +
+  binomial_smooth() +
+  geom_jitter(height = 0.05) +
+  theme_bw() +
+  theme(text = element_text(size=18)) +
+  labs(subtitle = "Trend line indicates a Binomial GLM smoother.")
+```
+
+## Data - Nosebleeds Hospitalization and Tissue Use
+
+A similar relationship exists between nosebleeds hospitalizations in the previous year, and tissue use.
+
+```{r}
+all %>%
+  mutate(tissue.use.bin = ifelse(tissue.use == "MEDIUM", 0, 1)) %>%
+  ggplot(aes(x = previous.year, y = tissue.use.bin)) +
+  binomial_smooth() +
+  geom_jitter(height = 0.05) +
+  theme_bw() +
+  theme(text = element_text(size=18)) +
+  labs(subtitle = "Trend line indicates a Binomial GLM smoother.")
+```
+
+## Data - Mucus Viscosity, Hospitalizations, Tissue Use
+
+Given the observed relationships above, one has to be clear about where causal effects have a theoretical foundation. E.g., does tissue use capture the severity of the nosebleed, which in turn is impacted by the mucus viscosity?
+
+If hospitalizations occur more often in cases of large severity (high tissue use), should then the relationship between hospitalizations and mucus viscosity not be larger?
+
+Be wary of adding tissue use as confounder to a model.
+
+## Data - Eye Colour as Control
+
+Estimating reasonable effects on tissue use as done above seems to be difficult though, given that a simple binomial GLM without penalization/prior shows differences across eye colours:
+
+```{r}
+all_glm <- all %>%
+  mutate(tissue.use.bin = ifelse(tissue.use == "MEDIUM", 0, 1))
+fit <- glm(tissue.use.bin~-1+eye.colour, family = binomial(), data = all_glm)
+round(summary(fit)$coefficients,2)
+round(rethinking::logistic(summary(fit)$coefficients[,1]),2)
+```
+
+## Data - Nosebleeds and Hospitalizations
+
+Interestingly, all subjects have at least 2 hospitalizations due to nosebleeds in the previous year (and thus should have had at least 2 nosebleeds).
+
+But even the subjects which have been observed for a year, show mostly less than 2 nosebleeds even for the Placebo.
+
+After filtering for a duration longer than 360 days, we have:
+
+```{r}
+all %>%
+  filter(duration > 360) %>%
+  group_by(arm) %>%
+  summarize(mean_nosebleeds = mean(nosebleeds), 
+            q85_nosebleeds = quantile(nosebleeds, 0.85),
+            min_hosp = min(previous.year)) %>%
+  knitr::kable()
+```
+
+## Model
+
+### What do we model?
+
+Let $Y_i$ be the number of nosebleeds of patient $i$ and $d$ the number of days for which we have observed her.
+
+Then the rate of nosebleeds per day is given as
+
+$$
+\lambda_i = \frac{Y_i}{d_i}, \text{ with } \lambda_i \geq 0
+$$
+
+## Model
+
+We are interested in how $\lambda_i$ is affected by the treatment $sdp_i\in\{0,1\}$.
+
+Thus we want to estimate the following model:
+
+$$
+\log(\lambda_i) = \beta_0 + \beta_1 \cdot sdp_i
+$$
+
+## Model
+
+We hypothesize that the effect of the treatment might vary depending on the mucus viscosity $mv_i$ of patient $i$. One might propose a limited impact after a certain point:
+
+$$
+\beta_1 = \gamma_0 + \gamma_1 \cdot \log(1+mv_i)
+$$
+
+## Model
+
+The number of nosebleeds of a patient is discrete. Thus propose a count distribution, e.g. Poisson, as generative model:
+
+$$
+Y_i \sim \text{Pois}(\lambda_i\cdot d_i)
+$$
+
+The Poisson in particular comes with a strong assumption $(\text{E}[Y] = \text{Var}[Y])$ that needs to be checked.
+
+## Model
+
+A first model could thus be given by:
+
+$$
+Y_i \sim \text{Pois}(\lambda_i\cdot d_i)
+$$
+
+$$
+\log(\lambda_i) = \beta_0 + (\gamma_0 + \gamma_1 \cdot mv_i) \cdot sdp_i
+$$
+
+## Possible Results
+
+```{r plot_treatment_effect}
+load(file = "~/friendly-epistaxis/model/20180704_m_treatment_mucus_plot_objects.rda")
+
+library(ggplot2)
+ggplot() +
+  geom_jitter(aes(y = nosebleeds/duration*365, x = mucus_viscosity,
+                  color = Group), 
+              data = all_stan_plot, height = 0.1, alpha = 0.5, size = 1.5) +
+  geom_ribbon(aes(x = mucus_viscosity,
+                  ymin = lb, ymax = ub, 
+                  fill = Group, group = Group), 
+              data = effect_estimate,
+              alpha = 0.3) +
+  geom_line(aes(x = mucus_viscosity, y = mean, color = Group, group = Group),
+            data = effect_estimate, size = 1.8) +
+  coord_cartesian(ylim = c(-0.1,2.1)) +
+  theme_bw() +
+  theme(legend.position = "bottom",
+        text = element_text(size=18)) +
+  labs(x = "Mucus Viscosity", y = "Expected Yearly Nosebleed Rate",
+       subtitle = "Ribbon shows 7%-93% credible interval of yearly nosebleed rate.",
+       title = "Estimated Effect of Superdupripine")
+```

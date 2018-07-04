@@ -1,12 +1,16 @@
+# data
+*.csv
+
 # History files
 .Rhistory
 .Rapp.history
 
 # Session Data files
 .RData
+.DS_Store
 
 # R Project
-.Rproj
+*.Rproj
 
 # Example code in package build process
 *-Ex.R

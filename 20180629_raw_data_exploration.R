@@ -59,3 +59,85 @@ sum(is.na(subject$eye.colour)) # 60!
 
 # next steps: explore treatment effects 
 # (join tables, group by treatment, check randomization)
+
+anyNA(randomization)
+anyNA(efficacy)
+
+all <- subject %>%
+  left_join(randomization) %>%
+  left_join(efficacy)
+
+all %>%
+  group_by(eye.colour) %>%
+  summarize(median = median(previous.year),
+            mean = mean(previous.year),
+            q75 = quantile(previous.year, 0.75),
+            n = n())
+
+# due to the count nature of the data, and the small-ish group sizes
+# for some of the eye colours, the variation in the mean rate 
+# appears somewhat big (min 2.22, max 2.37). Effect of treatment
+# needs to be bigger. 
+
+all %>%
+  group_by(arm) %>%
+  summarize(median = median(previous.year),
+            mean = mean(previous.year),
+            var = var(previous.year),
+            sd = sd(previous.year),
+            q75 = quantile(previous.year, 0.75),
+            n = n())
+
+# Even between treatment and non-treatment group there is a 
+# biggish difference in the mean
+
+# comparing to the standard deviation, the differences are not that big;
+# compared to a Poisson with mean = var, the samples are underdispersed
+
+all %>%
+  group_by(tissue.use) %>%
+  summarize(median = median(previous.year),
+            mean = mean(previous.year),
+            var = var(previous.year),
+            sd = sd(previous.year),
+            q75 = quantile(previous.year, 0.75),
+            n = n())
+
+# subjects with higher tissue use have somewhat more cases and variance,
+# but less subjects
+
+############################################################
+
+# before we take a look at the treatment effects, do we have any surprises
+# with regard to the exposure length of subjects (e.g., subjects dropping
+# out early?)
+
+summary(efficacy$duration)
+efficacy %>%
+  filter(duration != 365)
+
+# in total, less than a quarter have less than a full year,
+# but within that quarter the duration varies between 10 over 113 and 225 to 364
+# It would probably be quite forced to exclude some of them by a arbitrary 
+# threshold, so rather use model with exposure?
+
+############################################################
+
+subject
+subject %>%
+  group_by(country) %>%
+  summarize(min = min(previous.year),
+            mean = mean(previous.year),
+            var = var(previous.year),
+            max = max(previous.year),
+            n = n()) %>%
+  arrange(-mean)
+
+subject %>%
+  group_by(country) %>%
+  mutate(tissue.use = tissue.use == "HIGH") %>%
+  summarize(mean_tissue_use = mean(tissue.use),
+            mean_hospitalization = mean(previous.year),
+            sd_hospitalization = sd(previous.year),
+            n = n()) %>%
+  arrange(mean_tissue_use)
